@@ -2,8 +2,6 @@
 
 Windows' built-in `klist` binary supports dumping Kerberos TGTs. This tool converts the binary's output to ccache format for use with impacket and other Linux Kerberos tooling.
 
-## Dumping TGTs with `klist`
-
 List sessions:
 ```cmd
 C:\Windows\System32>klist sessions
