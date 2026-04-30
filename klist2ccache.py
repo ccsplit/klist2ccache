@@ -103,16 +103,39 @@ def parse_klist(text: str) -> dict:
         ticket_hex.append(re.sub(r"[^0-9a-fA-F]", "", m.group(1)))
     ticket_bytes = bytes.fromhex("".join(ticket_hex))
 
+    # Kerberos key sizes (RFC 4120 + Windows etypes)
+    _KEY_SIZES = {0x01: 8, 0x03: 8, 0x11: 16, 0x12: 32, 0x17: 16, 0x18: 16}
+
+    key_type = int(field(r"KeyType\s+(0x[0-9a-fA-F]+)", "0x12"), 16)
+
     # Session key — "KeyLength 32 - aa bb cc dd ..."
+    # As SYSTEM, Windows emits a KerberosKeyWithMetadata blob (LE u32 self-size, etype@8, key@28).
     raw = re.sub(
         r"\s+",
         "",
         field(r"KeyLength\s+\d+\s+-\s+([0-9a-fA-F][0-9a-fA-F ]*)"),
     )
     try:
-        key_bytes = bytes.fromhex(raw) if raw else b"\x00" * 32
+        raw_bytes = bytes.fromhex(raw) if raw else b""
     except ValueError:
-        key_bytes = b"\x00" * 32
+        raw_bytes = b""
+
+    key_bytes = b""
+    if raw_bytes:
+        if len(raw_bytes) >= 12 and struct.unpack_from("<I", raw_bytes, 0)[0] == len(raw_bytes):
+            etype_in_blob = struct.unpack_from("<I", raw_bytes, 8)[0]
+            key_sz = _KEY_SIZES.get(etype_in_blob)
+            if key_sz and len(raw_bytes) >= 28 + key_sz:
+                key_type = etype_in_blob
+                key_bytes = raw_bytes[28:28 + key_sz]
+        if not key_bytes:
+            expected = _KEY_SIZES.get(key_type, 32)
+            if len(raw_bytes) == expected:
+                key_bytes = raw_bytes
+
+    if not key_bytes:
+        expected = _KEY_SIZES.get(key_type, 32)
+        key_bytes = b"\x00" * expected
 
     return {
         "client":     field(r"ClientName\s*:\s*(.+)"),
@@ -122,7 +145,7 @@ def parse_klist(text: str) -> dict:
             field(r"TargetDomainName\s*:\s*(.+)"),
         ],
         "flags":      int(field(r"Ticket Flags\s*:\s*(0x[0-9a-fA-F]+)", "0x0"), 16),
-        "key_type":   int(field(r"KeyType\s+(0x[0-9a-fA-F]+)", "0x12"), 16),
+        "key_type":   key_type,
         "key_data":   key_bytes,
         "auth_time":  parse_time(field(r"StartTime\s*:\s*(.+?)\s*\(local\)")),
         "start_time": parse_time(field(r"StartTime\s*:\s*(.+?)\s*\(local\)")),
