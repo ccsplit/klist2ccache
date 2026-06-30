@@ -120,10 +120,24 @@ def parse_klist(text: str) -> dict:
     except ValueError:
         raw_bytes = b""
 
+    # Credential Guard variant: the blob is a marshalled KerberosKeyWithMetadata
+    # — self-size@0, typename-length@8, typename-offset@12 pointing at the literal
+    # ASCII "KerberosKeyWithMetadata", key@28, then the typename + metadata tail.
+    # Here offset 8 is NOT the etype, so fall back to the "KeyType 0x.." header.
+    cred_guard = False
     key_bytes = b""
     if raw_bytes:
-        if len(raw_bytes) >= 12 and struct.unpack_from("<I", raw_bytes, 0)[0] == len(raw_bytes):
-            etype_in_blob = struct.unpack_from("<I", raw_bytes, 8)[0]
+        if len(raw_bytes) >= 16 and struct.unpack_from("<I", raw_bytes, 0)[0] == len(raw_bytes):
+            _TN = b"KerberosKeyWithMetadata"
+            tn_len = struct.unpack_from("<I", raw_bytes, 8)[0]
+            tn_off = struct.unpack_from("<I", raw_bytes, 12)[0]
+            cred_guard = (
+                tn_len == len(_TN)
+                and 0 < tn_off <= len(raw_bytes) - len(_TN)
+                and raw_bytes[tn_off:tn_off + len(_TN)] == _TN
+            )
+            # CG: etype from header line; legacy SYSTEM blob: etype@8.
+            etype_in_blob = key_type if cred_guard else struct.unpack_from("<I", raw_bytes, 8)[0]
             key_sz = _KEY_SIZES.get(etype_in_blob)
             if key_sz and len(raw_bytes) >= 28 + key_sz:
                 key_type = etype_in_blob
@@ -147,6 +161,7 @@ def parse_klist(text: str) -> dict:
         "flags":      int(field(r"Ticket Flags\s*:\s*(0x[0-9a-fA-F]+)", "0x0"), 16),
         "key_type":   key_type,
         "key_data":   key_bytes,
+        "cred_guard": cred_guard,
         "auth_time":  parse_time(field(r"StartTime\s*:\s*(.+?)\s*\(local\)")),
         "start_time": parse_time(field(r"StartTime\s*:\s*(.+?)\s*\(local\)")),
         "end_time":   parse_time(field(r"EndTime\s*:\s*(.+?)\s*\(local\)")),
@@ -368,6 +383,9 @@ def main() -> None:
 
     # Print parsed info
     key_display = "(all-zeros!)" if all(b == 0 for b in info["key_data"]) else info["key_data"].hex()
+    if info.get("cred_guard"):
+        print("[*] Credential Guard KerberosKeyWithMetadata blob detected — using header etype.")
+
     print(f"\n[*] Parsed ticket:")
     print(f"    client     : {info['client']}@{info['realm']}")
     print(f"    server     : {'/'.join(info['sname'])}@{info['realm']}")

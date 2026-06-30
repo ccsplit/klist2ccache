@@ -75,15 +75,29 @@ def _parse_klist(text):
     except ValueError:
         raw_bytes = b""
 
+    # Credential Guard variant: the blob is a marshalled KerberosKeyWithMetadata
+    # — self-size@0, typename-length@8, typename-offset@12 pointing at the literal
+    # ASCII "KerberosKeyWithMetadata", key@28, then the typename + metadata tail.
+    # Here offset 8 is NOT the etype, so fall back to the "KeyType 0x.." header.
+    cred_guard = False
     key_bytes = b""
     if raw_bytes:
-        if len(raw_bytes) >= 12 and struct.unpack_from("<I", raw_bytes, 0)[0] == len(raw_bytes):
-            etype_in_blob = struct.unpack_from("<I", raw_bytes, 8)[0]
+        if len(raw_bytes) >= 16 and struct.unpack_from("<I", raw_bytes, 0)[0] == len(raw_bytes):
+            _TN = b"KerberosKeyWithMetadata"
+            tn_len = struct.unpack_from("<I", raw_bytes, 8)[0]
+            tn_off = struct.unpack_from("<I", raw_bytes, 12)[0]
+            cred_guard = (
+                tn_len == len(_TN)
+                and 0 < tn_off <= len(raw_bytes) - len(_TN)
+                and raw_bytes[tn_off:tn_off + len(_TN)] == _TN
+            )
+            etype_in_blob = key_type if cred_guard else struct.unpack_from("<I", raw_bytes, 8)[0]
             key_sz = _KEY_SIZES.get(etype_in_blob)
             if key_sz and len(raw_bytes) >= 28 + key_sz:
                 key_type = etype_in_blob
                 key_bytes = raw_bytes[28:28 + key_sz]
-                logging.debug("  Extracted %d-byte key (etype 0x%x) from metadata blob" % (key_sz, etype_in_blob))
+                logging.debug("  Extracted %d-byte key (etype 0x%x) from %s blob" % (
+                    key_sz, etype_in_blob, "Credential Guard" if cred_guard else "metadata"))
         if not key_bytes:
             expected = _KEY_SIZES.get(key_type, 32)
             if len(raw_bytes) == expected:
@@ -104,6 +118,7 @@ def _parse_klist(text):
         "flags": int(field(r"Ticket Flags\s*:\s*(0x[0-9a-fA-F]+)", "0x0"), 16),
         "key_type": key_type,
         "key_data": key_bytes,
+        "cred_guard": cred_guard,
         "auth_time": parse_time(field(r"StartTime\s*:\s*(.+?)\s*\(local\)")),
         "start_time": parse_time(field(r"StartTime\s*:\s*(.+?)\s*\(local\)")),
         "end_time": parse_time(field(r"EndTime\s*:\s*(.+?)\s*\(local\)")),
@@ -421,6 +436,9 @@ def cmd_dump(args):
         if not info["ticket_data"]:
             logging.error("  No ticket data found for %s" % account)
             continue
+
+        if info.get("cred_guard"):
+            logging.info("  Credential Guard KerberosKeyWithMetadata blob detected for %s" % account)
 
         safe_name = re.sub(r"[^\w@.-]", "_", "%s@%s" % (info["client"], info["realm"]))
         out_path = os.path.join(args.output_dir, safe_name + ".ccache")

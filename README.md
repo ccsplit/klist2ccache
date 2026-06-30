@@ -2,6 +2,8 @@
 
 Windows' built-in `klist` binary supports dumping Kerberos TGTs. **klist2ccache** converts that output to ccache format for use with impacket and other Linux Kerberos tooling. **klistremote** does the same thing remotely via Task Scheduler + SMB. **klistwinrm** does the same thing remotely via WinRM.
 
+All three auto-detect **Credential Guard** hosts. With Credential Guard enabled, `klist tgt -li` emits the session key as a marshalled `KerberosKeyWithMetadata` blob (key payload at offset 28, with the real etype only in the `KeyType 0x..` header line rather than inside the blob). The tools detect this layout and extract the key with the correct etype/length automatically — no extra flags needed. A `Credential Guard ... detected` notice is printed when this path triggers.
+
 ---
 
 ## klist2ccache
