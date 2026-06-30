@@ -91,13 +91,16 @@ def _parse_klist(text):
                 and 0 < tn_off <= len(raw_bytes) - len(_TN)
                 and raw_bytes[tn_off:tn_off + len(_TN)] == _TN
             )
-            etype_in_blob = key_type if cred_guard else struct.unpack_from("<I", raw_bytes, 8)[0]
-            key_sz = _KEY_SIZES.get(etype_in_blob)
-            if key_sz and len(raw_bytes) >= 28 + key_sz:
-                key_type = etype_in_blob
-                key_bytes = raw_bytes[28:28 + key_sz]
-                logging.debug("  Extracted %d-byte key (etype 0x%x) from %s blob" % (
-                    key_sz, etype_in_blob, "Credential Guard" if cred_guard else "metadata"))
+            # Non-CG SYSTEM blob: etype@8, cleartext key@28 — extract it.
+            # CG blob: key material is wrapped/encrypted (protected in VTL1) and is
+            # NOT recoverable offline, so do not treat offset-28 bytes as a key.
+            if not cred_guard:
+                etype_in_blob = struct.unpack_from("<I", raw_bytes, 8)[0]
+                key_sz = _KEY_SIZES.get(etype_in_blob)
+                if key_sz and len(raw_bytes) >= 28 + key_sz:
+                    key_type = etype_in_blob
+                    key_bytes = raw_bytes[28:28 + key_sz]
+                    logging.debug("  Extracted %d-byte key (etype 0x%x) from metadata blob" % (key_sz, etype_in_blob))
         if not key_bytes:
             expected = _KEY_SIZES.get(key_type, 32)
             if len(raw_bytes) == expected:
@@ -438,7 +441,9 @@ def cmd_dump(args):
             continue
 
         if info.get("cred_guard"):
-            logging.info("  Credential Guard KerberosKeyWithMetadata blob detected for %s" % account)
+            logging.error("  %s: session key is Credential Guard-protected (wrapped in VTL1); "
+                          "cannot export a usable ccache. Skipping." % account)
+            continue
 
         safe_name = re.sub(r"[^\w@.-]", "_", "%s@%s" % (info["client"], info["realm"]))
         out_path = os.path.join(args.output_dir, safe_name + ".ccache")
