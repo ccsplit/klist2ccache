@@ -1,0 +1,3 @@
+impacket
+pywinrm
+requests-ntlm2  # optional: pass-the-hash support for klistwinrm.py

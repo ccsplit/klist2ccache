@@ -175,12 +175,18 @@ SESSION_LINE = re.compile(
 )
 
 
-def parse_klist_sessions(text):
-    """Extract (logon_id_hex, account) for Kerberos sessions; exclude Kerberos:Network."""
+def parse_klist_sessions(text, include_computer=False):
+    """Extract (logon_id_hex, account) for Kerberos sessions.
+
+    Kerberos:Network sessions (machine/computer accounts) are excluded by
+    default; pass include_computer=True to include them.
+    """
     sessions = []
     for line in text.splitlines():
         line = line.strip()
-        if "Kerberos" not in line or "Kerberos:Network" in line:
+        if "Kerberos" not in line:
+            continue
+        if "Kerberos:Network" in line and not include_computer:
             continue
         m = SESSION_LINE.search(line)
         if m:
@@ -595,7 +601,7 @@ def _run_ps_via_pipe(smb, dce, ps_body, max_wait=90, pipe_timeout=45):
 
 # ─── Higher-level session/TGT helpers ────────────────────────────────────────
 
-def _get_sessions(smb, dce, debug=False, use_named_pipes=False):
+def _get_sessions(smb, dce, debug=False, use_named_pipes=False, include_computer=False):
     """Run klist sessions on target and return parsed session list."""
     logging.info("Enumerating remote Kerberos sessions ...")
     if use_named_pipes:
@@ -606,7 +612,7 @@ def _get_sessions(smb, dce, debug=False, use_named_pipes=False):
         return None
     if debug:
         print(sessions_text)
-    return parse_klist_sessions(sessions_text)
+    return parse_klist_sessions(sessions_text, include_computer=include_computer)
 
 
 def _get_sessions_and_tgts_via_pipe(smb, dce):
@@ -653,6 +659,11 @@ def _add_auth_args(parser):
         "--named-pipes",
         action="store_true",
         help="Stream command output via PowerShell named pipe over SMB IPC$ (no files on disk). Requires PowerShell 2.0+.",
+    )
+    parser.add_argument(
+        "--computer",
+        action="store_true",
+        help="Include computer/machine account sessions (Kerberos:Network sessions, e.g. HOSTNAME$)",
     )
     group = parser.add_argument_group("authentication")
     group.add_argument(
@@ -751,7 +762,7 @@ def cmd_list(args):
     logging.info("Connecting to %s ..." % address)
     dce, smb = _connect(args, domain, username, password, address, lmhash, nthash)
 
-    sessions = _get_sessions(smb, dce, debug=args.debug, use_named_pipes=args.named_pipes)
+    sessions = _get_sessions(smb, dce, debug=args.debug, use_named_pipes=args.named_pipes, include_computer=args.computer)
     dce.disconnect()
 
     if sessions is None:
@@ -810,7 +821,7 @@ def cmd_dump(args):
         dce.disconnect()
         if sessions_text is None:
             sys.exit(1)
-        sessions = parse_klist_sessions(sessions_text)
+        sessions = parse_klist_sessions(sessions_text, include_computer=args.computer)
     else:
         # Task 1 of 2: enumerate sessions via cmd
         _dump_product = random.choice(_PRODUCTS)
@@ -820,7 +831,7 @@ def cmd_dump(args):
             sys.exit(1)
         if args.debug:
             print(sessions_text)
-        sessions = parse_klist_sessions(sessions_text)
+        sessions = parse_klist_sessions(sessions_text, include_computer=args.computer)
         all_tgt_texts = None  # fetched below after filtering
 
     if not sessions:

